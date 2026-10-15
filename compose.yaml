@@ -1,0 +1,22 @@
+services:
+    backend:
+        build:
+            context: "./devLinker-backend"
+        image: devlinker-server
+        container_name: devlinker-server
+        env_file:
+            - "./devLinker-backend/.env"
+        ports:
+            - "7777:7777"
+        restart: unless-stopped
+
+    frontend:
+        build:
+            context: "./devLinker-frontend"
+        image: devlinker-client
+        container_name: devlinker-client
+        ports:
+            - "5173:80"
+        depends_on:
+            - backend
+        restart: unless-stopped
