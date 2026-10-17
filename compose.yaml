@@ -6,8 +6,6 @@ services:
         container_name: devlinker-server
         env_file:
             - "./devLinker-backend/.env"
-        ports:
-            - "7777:7777"
         restart: unless-stopped
 
     frontend:
