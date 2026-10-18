@@ -43,16 +43,74 @@ jobs:
     name: Deploy to EC2
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get runner public IP
+        id: runner_ip
+        run: |
+          set -euo pipefail
+          RUNNER_IP="$(curl -fsSL https://checkip.amazonaws.com | tr -d '[:space:]')"
+          echo "cidr=${RUNNER_IP}/32" >> "$GITHUB_OUTPUT"
+
+      - name: Authorize temporary SSH ingress
+        id: sg_rule
+        env:
+          EC2_SECURITY_GROUP_ID: ${{ secrets.EC2_SECURITY_GROUP_ID }}
+        run: |
+          set -euo pipefail
+          TEMP_CIDR="${{ steps.runner_ip.outputs.cidr }}"
+          RULE_DESC="gha-ec2-deploy-${{ github.run_id }}-${{ github.run_attempt }}"
+
+          set +e
+          AUTH_OUTPUT=$(aws ec2 authorize-security-group-ingress \
+            --group-id "$EC2_SECURITY_GROUP_ID" \
+            --ip-permissions "[{\"IpProtocol\":\"tcp\",\"FromPort\":22,\"ToPort\":22,\"IpRanges\":[{\"CidrIp\":\"${TEMP_CIDR}\",\"Description\":\"${RULE_DESC}\"}]}]" 2>&1)
+          AUTH_EXIT=$?
+          set -e
+
+          if [ "$AUTH_EXIT" -eq 0 ]; then
+            echo "added=true" >> "$GITHUB_OUTPUT"
+          elif echo "$AUTH_OUTPUT" | grep -q "InvalidPermission.Duplicate"; then
+            echo "added=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$AUTH_OUTPUT"
+            exit "$AUTH_EXIT"
+          fi
+
+          echo "cidr=${TEMP_CIDR}" >> "$GITHUB_OUTPUT"
+          echo "rule_desc=${RULE_DESC}" >> "$GITHUB_OUTPUT"
+
+
       - name: Deploy application
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 2m
           script: |
             cd ~/devlinker-deploy
             sudo docker compose pull
             sudo docker compose up -d
             sudo docker compose ps
+
+
+      - name: Revoke temporary SSH ingress
+        if: ${{ always() && steps.sg_rule.outputs.added == 'true' }}
+        env:
+          EC2_SECURITY_GROUP_ID: ${{ secrets.EC2_SECURITY_GROUP_ID }}
+        run: |
+          set -euo pipefail
+          aws ec2 revoke-security-group-ingress \
+            --group-id "$EC2_SECURITY_GROUP_ID" \
+            --ip-permissions "[{\"IpProtocol\":\"tcp\",\"FromPort\":22,\"ToPort\":22,\"IpRanges\":[{\"CidrIp\":\"${{ steps.sg_rule.outputs.cidr }}\",\"Description\":\"${{ steps.sg_rule.outputs.rule_desc }}\"}]}]"
