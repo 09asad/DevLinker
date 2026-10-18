@@ -49,8 +49,10 @@ jobs:
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
+          port: ${{ secrets.EC2_SSH_PORT || 22 }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 2m
           script: |
             cd ~/devlinker-deploy
             sudo docker compose pull
